@@ -1,0 +1,132 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: ragpass
+      POSTGRES_DB: ragdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  controller:
+    build: .
+    command: python src/controller.py
+    depends_on:
+      ollama:
+        condition: service_started
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_started
+    restart: on-failure
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
+      - CONGRESS_API_KEY=${CONGRESS_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - LLM_MODEL=llama3.1:8b
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+
+  question_worker:
+    build: .
+    command: python src/workers/question_worker.py
+    depends_on:
+      ollama:
+        condition: service_started
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
+    deploy:
+      replicas: 8
+    restart: on-failure
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
+      - CONGRESS_API_KEY=${CONGRESS_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - LLM_MODEL=llama3.1:8b
+
+  hyperlink_worker:
+    build: .
+    command: python src/workers/hyperlink_worker.py
+    depends_on:
+      kafka:
+        condition: service_started
+    restart: on-failure
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_URL=redis://redis:6379
+
+  article_generator:
+    build: .
+    command: python src/workers/article_generator.py
+    depends_on:
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_started
+    restart: on-failure
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+
+volumes:
+  postgres_data:
+  ollama_data:
