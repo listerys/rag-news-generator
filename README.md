@@ -1,6 +1,14 @@
 # RAG News Generator
 
-A distributed, high-throughput system that generates Markdown-based news articles about U.S. Congressional bills using Retrieval-Augmented Generation (RAG) and the Congress.gov API.
+**Author:** Anirban Khara
+
+## Overview
+
+The RAG News Generator is a sophisticated distributed system designed to automatically generate comprehensive, Markdown-formatted news articles about U.S. Congressional bills. By leveraging Retrieval-Augmented Generation (RAG) techniques and integrating with the official Congress.gov API, the system processes legislative data through a multi-stage pipeline powered by Apache Kafka for task orchestration. 
+
+The architecture employs parallel processing with eight concurrent question workers that fetch real-time bill information, validate congressional URLs, and utilize local LLM inference (Ollama with Mistral/Llama models) to generate human-readable answers to structured questions about each bill. The system maintains state consistency through PostgreSQL, ensuring reliable tracking of task completion across the distributed workflow. 
+
+All generated content is assembled into well-structured Markdown articles with proper citations, hyperlinks to official sources, and organized sections covering bill summaries, sponsors, committee assignments, and legislative history. This approach combines the accuracy of official government data with the natural language capabilities of modern language models, producing journalist-quality articles at scale without requiring external API costs or cloud-based LLM services.
 
 ## 🏗️ Architecture
 
