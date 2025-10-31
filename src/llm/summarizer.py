@@ -153,7 +153,80 @@ class LLMSummarizer:
                     "evidence": {"count": cosponsor_count, "source": "cosponsors_info"},
                     "confidence": 0.9
                 })
-        
+
+        # NEW: Extract amendment claims
+        if 'amendments_info' in data:
+            amends = data['amendments_info']
+            if isinstance(amends, dict):
+                total = amends.get('total_count', 0)
+                adopted = amends.get('adopted_count', 0)
+                rejected = amends.get('rejected_count', 0)
+                pending = amends.get('pending_count', 0)
+                if total > 0:
+                    claims.append({
+                        "type": "amendment_count",
+                        "claim": f"{total} amendments proposed ({adopted} adopted, {rejected} rejected, {pending} pending)",
+                        "evidence": amends,
+                        "confidence": 0.9
+                    })
+                # Extract specific amendment details
+                notable_amendments = amends.get('notable_amendments', [])
+                for amend in notable_amendments[:3]:  # Top 3 amendments
+                    amend_num = amend.get('number', '')
+                    amend_sponsor = amend.get('sponsor', {})
+                    sponsor_name = amend_sponsor.get('name', '') if isinstance(amend_sponsor, dict) else ''
+                    if amend_num and sponsor_name:
+                        claims.append({
+                            "type": "amendment_detail",
+                            "claim": f"Amendment {amend_num} by {sponsor_name}",
+                            "evidence": amend,
+                            "confidence": 0.85
+                        })
+
+        # NEW: Extract hearing claims
+        if 'hearings_info' in data:
+            hearings = data['hearings_info']
+            if isinstance(hearings, dict):
+                total = hearings.get('total_hearings', 0)
+                markup = hearings.get('markup_sessions', 0)
+                meetings = hearings.get('committee_meetings', 0)
+                if total > 0:
+                    claims.append({
+                        "type": "hearings",
+                        "claim": f"{total} committee actions/hearings ({markup} markups, {meetings} meetings)",
+                        "evidence": hearings,
+                        "confidence": 0.85
+                    })
+                # Extract specific hearing details
+                hearing_list = hearings.get('hearings', [])
+                for hearing in hearing_list[:3]:  # Top 3 hearings
+                    h_type = hearing.get('type', '')
+                    h_date = hearing.get('date', '')
+                    h_committee = hearing.get('committee', '')
+                    if h_type and h_date:
+                        claim_text = f"{h_type} on {h_date}"
+                        if h_committee:
+                            claim_text += f" by {h_committee}"
+                        claims.append({
+                            "type": "hearing_detail",
+                            "claim": claim_text,
+                            "evidence": hearing,
+                            "confidence": 0.8
+                        })
+
+        # NEW: Extract committee reports claims
+        if 'committee_reports_info' in data:
+            reports = data['committee_reports_info']
+            if isinstance(reports, dict):
+                total = reports.get('total_reports', 0)
+                if total > 0:
+                    claims.append({
+                        "type": "committee_reports",
+                        "claim": f"{total} committee reports published",
+                        "evidence": reports,
+                        "confidence": 0.9
+                    })
+
         return claims
 
     def _extract_hyperlink_entities(self, data: dict) -> str:
@@ -193,32 +266,60 @@ class LLMSummarizer:
         
         return "\n".join(entities)
 
-    def create_grounded_prompt(self, question: str, data: dict, claims: List[Dict[str, Any]]) -> str:
+    def create_grounded_prompt(self, question: str, data: dict, claims: List[Dict[str, Any]], completeness_report: Dict[str, Any] = None) -> str:
         """Create a prompt that explicitly grounds responses in provided data"""
-        
+
+        # NEW: Pre-filter votes to prioritize final passage votes for vote-related questions
+        if 'votes_info' in data and 'vote' in question.lower():
+            votes_info = data['votes_info'].copy()
+            all_votes = votes_info.get('votes', [])
+
+            # Separate final passage votes from procedural votes
+            final_passage_votes = [v for v in all_votes if v.get('is_final_passage')]
+            other_votes = [v for v in all_votes if not v.get('is_final_passage')]
+
+            # Rebuild votes_info with final passage first (limit to most important votes)
+            votes_info['votes'] = final_passage_votes[:5] + other_votes[:3]
+            data = data.copy()
+            data['votes_info'] = votes_info
+            logger.info(f"Filtered votes: {len(final_passage_votes)} final passage, {len(other_votes)} other")
+
         # Format verified claims
         verified_facts = []
         for claim in claims:
             if claim["confidence"] >= self.confidence_threshold:
                 verified_facts.append(f"• {claim['claim']}")
-        
+
         # Extract available entities for hyperlinking
         hyperlink_entities = self._extract_hyperlink_entities(data)
-        
+
         # Create constrained context
         context = self.format_constrained_context(data)
-        
+
+        # NEW: Add data quality warning if needed
+        data_quality_warning = ""
+        if completeness_report and completeness_report['data_quality_score'] < 0.7:
+            data_quality_warning = """
+IMPORTANT: The data provided is incomplete. Be especially careful to:
+- Only state facts explicitly present in the data
+- Acknowledge when information is limited
+- Do NOT infer or extrapolate missing details
+"""
+
         prompt = f"""You are a congressional news reporter writing for a professional publication. Write in a clear, engaging news style.
+{data_quality_warning}
 
 CRITICAL RULES:
 1. ONLY use information explicitly provided in the data below
 2. Write naturally - like a news article, not a technical report
 3. DO NOT include technical phrases like "Data completeness", "confidence score", "according to field X"
-4. DO NOT use phrases like "Based on available data:" or "Information not available in provided data"
-5. If information is missing, write naturally around it (e.g., "The bill has been referred to committee" rather than "Committee information: not available")
-6. Never invent names, dates, or numbers not in the source data
-7. Use exact names and numbers as provided
-8. If you cannot answer with available data, write a brief, natural statement acknowledging what IS known
+4. If critical information is missing, acknowledge it briefly and naturally
+   Example: "Committee assignments for this bill are not yet available in congressional records."
+5. If NO information exists to answer the question, say so clearly and briefly
+   Example: "Details on hearings have not been published at this time."
+6. NEVER invent or infer information not explicitly in the data
+7. Use exact names, dates, and numbers as provided - do not approximate or round
+8. When you have partial information, report what IS available without mentioning what's missing
 
 SPECIAL INSTRUCTIONS FOR VOTES:
 - When reporting votes, ALWAYS prioritize FINAL PASSAGE votes (look for is_final_passage: True or vote_type: "Final Passage")
@@ -248,42 +349,47 @@ Response:"""
     def format_constrained_context(self, data: dict) -> str:
         """Format data with explicit field names and structure preservation"""
         context_parts = []
-        
+
         for key, value in data.items():
             if isinstance(value, dict):
                 # Preserve structure and show field names
                 if value:  # Only include non-empty dicts
-                    dict_str = json.dumps({k: v for k, v in value.items() if v}, indent=2)[:600]
+                    dict_str = json.dumps({k: v for k, v in value.items() if v}, indent=2)[:2000]
                     context_parts.append(f"Field '{key}': {dict_str}")
                 else:
                     context_parts.append(f"Field '{key}': [EMPTY]")
             elif isinstance(value, list):
                 if len(value) > 0:
                     # Show count and sample data
-                    list_preview = json.dumps(value[:3], indent=2)[:400]
+                    list_preview = json.dumps(value[:3], indent=2)[:1500]
                     context_parts.append(f"Field '{key}' (count: {len(value)}): {list_preview}")
                 else:
                     context_parts.append(f"Field '{key}': [EMPTY LIST]")
             else:
                 if value:
-                    context_parts.append(f"Field '{key}': {str(value)[:300]}")
+                    context_parts.append(f"Field '{key}': {str(value)[:1000]}")
                 else:
                     context_parts.append(f"Field '{key}': [EMPTY]")
-        
-        return "\n\n".join(context_parts)[:3500]  # Limit total context size
+
+        return "\n\n".join(context_parts)[:12000]  # Increased from 3500 to support richer context (Llama 3.1 8B supports 8K+ tokens)
 
     def answer_question(self, question: str, data: dict) -> str:
         """Generate answer with enhanced hallucination prevention"""
-        
+
         # Step 1: Verify data completeness
         completeness_report = self.verify_data_completeness(data)
         logger.info(f"Data quality score: {completeness_report['data_quality_score']:.2f}")
-        
+
+        # NEW: Data quality guardrails - reject if data is severely incomplete
+        if completeness_report['data_quality_score'] < 0.5:
+            logger.warning(f"Data quality too low ({completeness_report['data_quality_score']:.2f}) - returning graceful fallback")
+            return "Information on this topic is limited in congressional records at this time."
+
         # Step 2: Extract factual claims
         factual_claims = self.extract_factual_claims(data)
-        
-        # Step 3: Create grounded prompt
-        prompt = self.create_grounded_prompt(question, data, factual_claims)
+
+        # Step 3: Create grounded prompt with quality-based adjustments
+        prompt = self.create_grounded_prompt(question, data, factual_claims, completeness_report)
         
         # Step 4: Generate with multiple attempts and consistency checking
         responses = []
