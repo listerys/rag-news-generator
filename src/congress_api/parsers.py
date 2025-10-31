@@ -38,13 +38,13 @@ def parse_bill_status(bill_data: Dict, actions_data: Dict) -> Dict:
                 result['public_law_number'] = f"{law_type} {law_number}"
                 result['current_status'] = 'Became Law'
         
-        # Get summary
+        # Get summary - don't truncate to preserve full context
         summaries = bill.get('summaries', [])
         if summaries and isinstance(summaries, list) and len(summaries) > 0:
-            result['summary'] = summaries[0].get('text', '')[:500]  # Limit length
+            result['summary'] = summaries[0].get('text', '')  # Full summary for better context
         elif summaries and isinstance(summaries, dict):
             # Sometimes summaries is a dict, not a list
-            result['summary'] = summaries.get('text', '')[:500]
+            result['summary'] = summaries.get('text', '')
         
         # Get latest action
         actions = actions_data.get('actions', [])
@@ -237,9 +237,9 @@ def parse_cosponsors(cosponsors_data: Dict, committees_data: Dict) -> Dict:
         
         result['total_count'] = len(active_cosponsors)
         result['withdrawn_count'] = withdrawn_count
-        
-        # Extract detailed info for first 50 active cosponsors
-        for cosponsor in active_cosponsors[:50]:
+
+        # Extract detailed info for first 100 active cosponsors (increased from 50)
+        for cosponsor in active_cosponsors[:100]:
             result['cosponsors'].append({
                 'name': cosponsor.get('fullName', ''),
                 'bioguide_id': cosponsor.get('bioguideId', ''),
@@ -319,14 +319,14 @@ def parse_amendments(amendments_data: Dict) -> Dict:
             else:
                 result['pending_count'] += 1
         
-        # Extract details for first 15 amendments for better context
-        for amendment in amendments[:15]:
+        # Extract details for first 50 amendments for better context (increased from 15)
+        for amendment in amendments[:50]:
             amend_info = {
                 'number': amendment.get('number', ''),
-                'description': (amendment.get('description', '') or amendment.get('purpose', ''))[:200],
+                'description': (amendment.get('description', '') or amendment.get('purpose', '')),  # Full description
                 'sponsor': {},
                 'submitted_date': amendment.get('submittedDate', ''),
-                'status': amendment.get('latestAction', {}).get('text', '')[:150]
+                'status': amendment.get('latestAction', {}).get('text', '')  # Full status text
             }
             
             # Get sponsor if available
@@ -621,13 +621,13 @@ def parse_committee_reports(reports_data: Dict) -> Dict:
     try:
         reports = reports_data.get('reports', [])
         result['total_reports'] = len(reports)
-        
-        for report in reports[:5]:  # Limit to first 5 most relevant reports
+
+        for report in reports[:15]:  # Increased from 5 to 15 for better coverage
             report_info = {
                 'citation': report.get('citation', ''),
                 'type': report.get('type', ''),
                 'date': report.get('updateDate', ''),
-                'title': (report.get('text', '') or '')[:200],
+                'title': (report.get('text', '') or ''),  # Full title for context
                 'chamber': '',
                 'url': report.get('url', '')
             }

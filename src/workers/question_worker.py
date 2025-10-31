@@ -91,7 +91,20 @@ class QuestionWorker:
         
         # Generate answer using LLM
         answer = self.llm.answer_question(question_text, data)
-        
+
+        # NEW: Post-generation validation to catch hallucinations
+        validation_result = self.llm.batch_verify_responses([answer], [data])[0]
+        logger.info(f"Answer validation score: {validation_result['verification_score']:.2f} ({validation_result['confidence_assessment']})")
+
+        # If validation score is low, regenerate with stricter prompt
+        if validation_result['verification_score'] < 0.6 and validation_result['confidence_assessment'] == 'low':
+            logger.warning(f"Low verification score ({validation_result['verification_score']:.2f}) - regenerating with stricter prompt")
+            stricter_question = question_text + " [CRITICAL: Be extremely factual - only state what you can directly verify from the data]"
+            answer = self.llm.answer_question(stricter_question, data)
+            # Re-validate
+            validation_result = self.llm.batch_verify_responses([answer], [data])[0]
+            logger.info(f"Re-validated answer score: {validation_result['verification_score']:.2f}")
+
         # Extract hyperlinks
         raw_links = self.extract_hyperlinks(data, bill_id)
         # Validate links asynchronously but KEEP ALL (don't filter by validation)
