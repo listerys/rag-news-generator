@@ -4,7 +4,7 @@ confluent-kafka==2.3.0
 
 # HTTP & API
 requests==2.31.0
-httpx==0.25.0
+httpx==0.27.2
 aiohttp==3.9.0
 
 # Database
@@ -12,12 +12,12 @@ psycopg2-binary==2.9.9
 redis==5.0.1
 sqlalchemy==2.0.23
 
-# LLM - Local inference via Ollama (no additional Python deps needed)
-# Ollama runs as a separate Docker service
+# LLM - Ollama (qwen2.5:7b)
+ollama==0.4.4
 
 # Data Processing
 pandas==2.1.3
-pydantic==2.5.0
+pydantic==2.9.2
 
 # Testing
 pytest==7.4.3

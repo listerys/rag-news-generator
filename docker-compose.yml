@@ -1,19 +1,4 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    restart: unless-stopped
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     environment:
@@ -54,17 +39,36 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   controller:
     build: .
     command: python src/controller.py
     depends_on:
-      ollama:
-        condition: service_started
       kafka:
         condition: service_started
       redis:
         condition: service_started
       postgres:
+        condition: service_started
+      ollama:
         condition: service_started
     restart: on-failure
     environment:
@@ -72,8 +76,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
       - CONGRESS_API_KEY=${CONGRESS_API_KEY}
-      - OLLAMA_URL=http://ollama:11434
-      - LLM_MODEL=llama3.1:8b
+      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - ./output:/app/output
       - ./logs:/app/logs
@@ -82,11 +85,11 @@ services:
     build: .
     command: python src/workers/question_worker.py
     depends_on:
-      ollama:
-        condition: service_started
       kafka:
         condition: service_started
       redis:
+        condition: service_started
+      ollama:
         condition: service_started
     deploy:
       replicas: 8
@@ -96,8 +99,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://raguser:ragpass@postgres:5432/ragdb
       - CONGRESS_API_KEY=${CONGRESS_API_KEY}
-      - OLLAMA_URL=http://ollama:11434
-      - LLM_MODEL=llama3.1:8b
+      - OLLAMA_HOST=http://ollama:11434
 
   hyperlink_worker:
     build: .

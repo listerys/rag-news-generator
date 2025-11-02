@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-def parse_bill_status(bill_data: Dict, actions_data: Dict) -> Dict:
+def parse_bill_status(bill_data: Dict, actions_data: Dict, summaries_data: Dict = None) -> Dict:
     """Extract comprehensive legislative status with accurate tracking"""
     result = {
         'title': '',
@@ -38,13 +38,11 @@ def parse_bill_status(bill_data: Dict, actions_data: Dict) -> Dict:
                 result['public_law_number'] = f"{law_type} {law_number}"
                 result['current_status'] = 'Became Law'
         
-        # Get summary - don't truncate to preserve full context
-        summaries = bill.get('summaries', [])
-        if summaries and isinstance(summaries, list) and len(summaries) > 0:
-            result['summary'] = summaries[0].get('text', '')  # Full summary for better context
-        elif summaries and isinstance(summaries, dict):
-            # Sometimes summaries is a dict, not a list
-            result['summary'] = summaries.get('text', '')
+        # Get summary from summaries endpoint (requires separate API call)
+        if summaries_data:
+            summaries = summaries_data.get('summaries', [])
+            if summaries and isinstance(summaries, list) and len(summaries) > 0:
+                result['summary'] = summaries[0].get('text', '')  # Full summary for better context
         
         # Get latest action
         actions = actions_data.get('actions', [])
@@ -524,15 +522,10 @@ def parse_hearings(actions_data: Dict) -> Dict:
             action_date = action.get('actionDate', '')
 
             # EXCLUDE votes - they should only appear in votes_info, not hearings_info
-            # Check for recorded votes or vote-related keywords
+            # Only exclude if there's an actual recorded vote attached
             has_recorded_vote = action.get('recordedVotes', []) and len(action.get('recordedVotes', [])) > 0
-            is_vote_action = any(keyword in action_lower for keyword in [
-                'vote:', 'roll call', 'roll no.', 'passed house', 'passed senate',
-                'final passage', 'yea-nay', 'record vote', 'on passage',
-                'motion to table', 'cloture', 'veto override'
-            ])
 
-            if has_recorded_vote or is_vote_action:
+            if has_recorded_vote:
                 continue  # Skip votes - they're handled by parse_votes()
 
             # Look for various types of committee and floor proceedings

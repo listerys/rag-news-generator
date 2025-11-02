@@ -80,21 +80,59 @@ class CongressAPIClient:
                     return {}
                 time.sleep(backoff)
                 backoff = min(max_backoff, backoff * 2)
-    
+
+    def _parse_bill_id(self, bill_id: str) -> tuple:
+        """
+        Parse bill_id into (congress, bill_type, bill_number)
+        Handles both normalized (sres412-119) and original (S.Res.412) formats
+        """
+        parts = bill_id.split('-')
+        if len(parts) > 1:
+            # Normalized format: sres412-119
+            congress = parts[1]
+            bill_part = parts[0]
+            bill_type = ''.join([c for c in bill_part if not c.isdigit()]).lower()
+            bill_number = ''.join([c for c in bill_part if c.isdigit()])
+        else:
+            # Original format: S.Res.412 - normalize it
+            logger.warning(f"Received non-normalized bill_id: {bill_id}, normalizing...")
+            congress = "118"  # Default to current congress
+            # Handle different bill formats
+            bill_type_map = {
+                'H.R.': 'hr',
+                'S.': 's',
+                'H.Res.': 'hres',
+                'S.Res.': 'sres',
+                'H.J.Res.': 'hjres',
+                'S.J.Res.': 'sjres',
+                'H.Con.Res.': 'hconres',
+                'S.Con.Res.': 'sconres'
+            }
+            bill_type = None
+            bill_number = None
+            for prefix, code in bill_type_map.items():
+                if bill_id.startswith(prefix):
+                    bill_type = code
+                    bill_number = bill_id.replace(prefix, '').strip()
+                    break
+
+            if not bill_type or not bill_number:
+                logger.error(f"Could not parse bill_id: {bill_id}")
+                return None, None, None
+
+        # Ensure bill_type is lowercase and clean
+        bill_type = bill_type.lower().replace('.', '')
+        return congress, bill_type, bill_number
+
     def get_bill_details(self, bill_id: str) -> Dict:
         """Fetch bill details with special handling for problematic bills"""
-        # Parse bill_id: hr1-118 -> congress=118, type=hr, number=1
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
-        # Special logging for S.Res.412 to debug missing data
-        if bill_type == 'sres' and bill_number == '412':
-            logger.info(f"Fetching details for S.Res.412 (congress={congress}, type={bill_type}, number={bill_number})")
-        
+        # Parse bill_id using helper method
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}"
         result = self._make_request(endpoint)
         
@@ -113,34 +151,34 @@ class CongressAPIClient:
     
     def get_bill_actions(self, bill_id: str) -> Dict:
         """Fetch bill actions/status"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/actions"
         return self._make_request(endpoint)
     
     def get_bill_committees(self, bill_id: str) -> Dict:
         """Fetch committees"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/committees"
         return self._make_request(endpoint)
     
     def get_bill_cosponsors(self, bill_id: str) -> Dict:
         """Fetch ALL cosponsors with pagination support"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/cosponsors"
         
         # Fetch first page
@@ -173,12 +211,12 @@ class CongressAPIClient:
     
     def get_bill_amendments(self, bill_id: str) -> Dict:
         """Fetch ALL amendments with pagination support"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/amendments"
         
         # Fetch first page to get total count
@@ -241,23 +279,34 @@ class CongressAPIClient:
     
     def get_bill_text(self, bill_id: str) -> Dict:
         """Fetch full bill text/summary"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/text"
+        return self._make_request(endpoint)
+    
+    def get_bill_summaries(self, bill_id: str) -> Dict:
+        """Fetch bill summaries (official summaries of what bill does)"""
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
+        endpoint = f"bill/{congress}/{bill_type}/{bill_number}/summaries"
         return self._make_request(endpoint)
     
     def get_committee_reports(self, bill_id: str) -> Dict:
         """Fetch committee reports for hearing findings"""
-        parts = bill_id.split('-')
-        congress = parts[1] if len(parts) > 1 else "118"
-        bill_part = parts[0]
-        bill_type = ''.join([c for c in bill_part if not c.isdigit()])
-        bill_number = ''.join([c for c in bill_part if c.isdigit()])
-        
+        congress, bill_type, bill_number = self._parse_bill_id(bill_id)
+
+        if not congress or not bill_type or not bill_number:
+            logger.error(f"Could not parse bill_id: {bill_id}")
+            return {}
+
         endpoint = f"bill/{congress}/{bill_type}/{bill_number}/committeeReports"
         return self._make_request(endpoint)
     

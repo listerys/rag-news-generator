@@ -38,7 +38,7 @@ QUESTIONS = [
     {
         "id": 5,
         "text": "Have any hearings happened? What were findings?",
-        "api_endpoints": ["committee_reports", "actions"]
+        "api_endpoints": ["actions"]
     },
     {
         "id": 6,

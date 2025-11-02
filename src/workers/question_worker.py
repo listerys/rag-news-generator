@@ -24,7 +24,11 @@ class QuestionWorker:
             bootstrap_servers='kafka:29092',
             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
             group_id='question_workers',
-            auto_offset_reset='earliest'
+            auto_offset_reset='earliest',
+            # Extended timeouts for long LLM processing (128+ seconds observed)
+            session_timeout_ms=300000,        # 5 minutes - max time between heartbeats
+            heartbeat_interval_ms=30000,      # 30 seconds - how often to send heartbeats
+            max_poll_interval_ms=600000       # 10 minutes - max time between polls
         )
         
         self.producer = KafkaProducer(
@@ -53,7 +57,16 @@ class QuestionWorker:
         # Fetch relevant data (concurrently)
         t0 = perf_counter()
         data = self.fetch_data(normalized_bill, task['api_endpoints'])
-        
+
+        # Validate that we got some data
+        if not data or (not data.get('_raw') and not any(k in data for k in ['bill_status', 'sponsor_info', 'committees_info', 'cosponsors_info', 'amendments_info', 'votes_info', 'hearings_info'])):
+            logger.error(f"No data fetched for {bill_id} - Q{question_id}. API may have failed or bill may not exist.")
+            # Save empty answer indicating data unavailable
+            answer = "Information not available - unable to retrieve data from Congress.gov API."
+            self.state_store.save_answer(bill_id, question_id, answer, [])
+            self.state_store.mark_question_complete(bill_id, question_id)
+            return
+
         # Save bill metadata (if this is the first question)
         if question_id == 1 and '_raw' in data:
             raw_data = data['_raw']
@@ -91,19 +104,6 @@ class QuestionWorker:
         
         # Generate answer using LLM
         answer = self.llm.answer_question(question_text, data)
-
-        # NEW: Post-generation validation to catch hallucinations
-        validation_result = self.llm.batch_verify_responses([answer], [data])[0]
-        logger.info(f"Answer validation score: {validation_result['verification_score']:.2f} ({validation_result['confidence_assessment']})")
-
-        # If validation score is low, regenerate with stricter prompt
-        if validation_result['verification_score'] < 0.6 and validation_result['confidence_assessment'] == 'low':
-            logger.warning(f"Low verification score ({validation_result['verification_score']:.2f}) - regenerating with stricter prompt")
-            stricter_question = question_text + " [CRITICAL: Be extremely factual - only state what you can directly verify from the data]"
-            answer = self.llm.answer_question(stricter_question, data)
-            # Re-validate
-            validation_result = self.llm.batch_verify_responses([answer], [data])[0]
-            logger.info(f"Re-validated answer score: {validation_result['verification_score']:.2f}")
 
         # Extract hyperlinks
         raw_links = self.extract_hyperlinks(data, bill_id)
@@ -163,6 +163,10 @@ class QuestionWorker:
                     res = results[idx]
                     idx += 1
                     if isinstance(res, Exception):
+                        logger.warning(f"Failed to fetch {endpoint} for {bill_id}: {res}")
+                        continue
+                    if not res or (isinstance(res, dict) and not res):
+                        logger.warning(f"Empty response for {endpoint} for {bill_id}")
                         continue
                     if endpoint == "bill_details":
                         raw_data['bill_details'] = res
@@ -189,28 +193,56 @@ class QuestionWorker:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(_fetch_all())
 
-        # Derive structured fields
-        if 'bill_details' in raw_data and 'actions' in raw_data:
-            data['bill_status'] = parse_bill_status(raw_data['bill_details'], raw_data['actions'])
+        # Derive structured fields with error handling
+        # Always fetch summaries to get full bill description
+        summaries_data = {}
+        try:
+            summaries_data = self.api_client.get_bill_summaries(bill_id)
+        except Exception as e:
+            logger.debug(f"Could not fetch summaries for {bill_id}: {e}")
 
-        if 'bill_details' in raw_data:
-            data['sponsor_info'] = parse_sponsor_info(raw_data['bill_details'])
+        try:
+            if 'bill_details' in raw_data and 'actions' in raw_data:
+                data['bill_status'] = parse_bill_status(raw_data['bill_details'], raw_data['actions'], summaries_data)
+        except Exception as e:
+            logger.warning(f"Error parsing bill status for {bill_id}: {e}")
 
-        if 'committees' in raw_data:
-            data['committees_info'] = parse_committees(raw_data['committees'])
+        try:
+            if 'bill_details' in raw_data:
+                data['sponsor_info'] = parse_sponsor_info(raw_data['bill_details'])
+        except Exception as e:
+            logger.warning(f"Error parsing sponsor info for {bill_id}: {e}")
 
-        if 'cosponsors' in raw_data and 'committees' in raw_data:
-            data['cosponsors_info'] = parse_cosponsors(raw_data['cosponsors'], raw_data['committees'])
+        try:
+            if 'committees' in raw_data:
+                data['committees_info'] = parse_committees(raw_data['committees'])
+        except Exception as e:
+            logger.warning(f"Error parsing committees for {bill_id}: {e}")
 
-        if 'amendments' in raw_data:
-            data['amendments_info'] = parse_amendments(raw_data['amendments'])
+        try:
+            if 'cosponsors' in raw_data and 'committees' in raw_data:
+                data['cosponsors_info'] = parse_cosponsors(raw_data['cosponsors'], raw_data['committees'])
+        except Exception as e:
+            logger.warning(f"Error parsing cosponsors for {bill_id}: {e}")
 
-        if 'actions' in raw_data:
-            data['votes_info'] = parse_votes(raw_data['actions'])
-            data['hearings_info'] = parse_hearings(raw_data['actions'])
+        try:
+            if 'amendments' in raw_data:
+                data['amendments_info'] = parse_amendments(raw_data['amendments'])
+        except Exception as e:
+            logger.warning(f"Error parsing amendments for {bill_id}: {e}")
 
-        if 'committee_reports' in raw_data:
-            data['committee_reports_info'] = parse_committee_reports(raw_data['committee_reports'])
+        try:
+            if 'actions' in raw_data:
+                data['votes_info'] = parse_votes(raw_data['actions'])
+                data['hearings_info'] = parse_hearings(raw_data['actions'])
+        except Exception as e:
+            logger.warning(f"Error parsing votes/hearings for {bill_id}: {e}")
+
+        try:
+            if 'committee_reports' in raw_data:
+                data['committee_reports_info'] = parse_committee_reports(raw_data['committee_reports'])
+        except Exception as e:
+            logger.warning(f"Error parsing committee reports for {bill_id}: {e}")
 
         # Store raw data for reference
         data['_raw'] = raw_data

@@ -42,12 +42,8 @@ env/
 *~
 .DS_Store
 
-# Logs
-logs/*.log
-*.log
 
 # Output
-output/*.json
 output/*.md
 
 # Model cache
